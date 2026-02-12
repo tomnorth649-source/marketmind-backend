@@ -8,12 +8,17 @@ Provides probability estimates for:
 Data sources:
 - CoinGecko API (free tier)
 - On-chain metrics (future: Glassnode)
+
+Caching: In-memory TTL cache (2-5 min depending on endpoint)
 """
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import Optional
 import httpx
+from cachetools import TTLCache
+import threading
 
 
 @dataclass
@@ -58,9 +63,21 @@ class CryptoModule:
         "avax": {"id": "avalanche-2", "name": "Avalanche"},
     }
     
+    # Cache TTLs (seconds)
+    CACHE_TTL = {
+        "price": 120,       # 2 min for individual prices
+        "dashboard": 180,   # 3 min for dashboard
+        "market": 300,      # 5 min for global market
+        "history": 600,     # 10 min for historical data
+    }
+    
     def __init__(self):
-        self._cache: dict = {}
-        self._cache_ttl = timedelta(minutes=2)  # Crypto moves fast
+        self._lock = threading.Lock()
+        # Separate caches per data type for better TTL control
+        self._price_cache = TTLCache(maxsize=100, ttl=self.CACHE_TTL["price"])
+        self._dashboard_cache = TTLCache(maxsize=10, ttl=self.CACHE_TTL["dashboard"])
+        self._market_cache = TTLCache(maxsize=10, ttl=self.CACHE_TTL["market"])
+        self._history_cache = TTLCache(maxsize=50, ttl=self.CACHE_TTL["history"])
     
     async def _coingecko_request(self, endpoint: str, params: dict = None) -> dict:
         """Make request to CoinGecko API."""
@@ -74,18 +91,18 @@ class CryptoModule:
             return response.json()
     
     async def get_price(self, symbol: str) -> CryptoPrice:
-        """Get current price for a cryptocurrency."""
+        """Get current price for a cryptocurrency (cached 2 min)."""
         if symbol.lower() not in self.COINS:
             raise ValueError(f"Unknown coin: {symbol}. Available: {list(self.COINS.keys())}")
         
         coin_id = self.COINS[symbol.lower()]["id"]
         coin_name = self.COINS[symbol.lower()]["name"]
         
+        # Check cache first
         cache_key = f"price:{coin_id}"
-        if cache_key in self._cache:
-            cached, cached_at = self._cache[cache_key]
-            if datetime.now() - cached_at < self._cache_ttl:
-                return cached
+        with self._lock:
+            if cache_key in self._price_cache:
+                return self._price_cache[cache_key]
         
         data = await self._coingecko_request(
             f"/coins/{coin_id}",
@@ -105,7 +122,8 @@ class CryptoModule:
             last_updated=datetime.now(),
         )
         
-        self._cache[cache_key] = (price, datetime.now())
+        with self._lock:
+            self._price_cache[cache_key] = price
         return price
     
     async def get_prices(self, symbols: list[str] = None) -> list[CryptoPrice]:
@@ -124,11 +142,16 @@ class CryptoModule:
         return prices
     
     async def get_market_overview(self) -> dict:
-        """Get overall crypto market data."""
+        """Get overall crypto market data (cached 5 min)."""
+        cache_key = "market_overview"
+        with self._lock:
+            if cache_key in self._market_cache:
+                return self._market_cache[cache_key]
+        
         data = await self._coingecko_request("/global")
         market = data.get("data", {})
         
-        return {
+        result = {
             "total_market_cap": market.get("total_market_cap", {}).get("usd"),
             "total_volume_24h": market.get("total_volume", {}).get("usd"),
             "btc_dominance": market.get("market_cap_percentage", {}).get("btc"),
@@ -136,17 +159,26 @@ class CryptoModule:
             "market_cap_change_24h": market.get("market_cap_change_percentage_24h_usd"),
             "active_cryptocurrencies": market.get("active_cryptocurrencies"),
         }
+        
+        with self._lock:
+            self._market_cache[cache_key] = result
+        return result
     
     async def get_price_history(
         self, 
         symbol: str, 
         days: int = 30,
     ) -> list[dict]:
-        """Get historical price data."""
+        """Get historical price data (cached 10 min)."""
         if symbol.lower() not in self.COINS:
             raise ValueError(f"Unknown coin: {symbol}")
         
         coin_id = self.COINS[symbol.lower()]["id"]
+        
+        cache_key = f"history:{coin_id}:{days}"
+        with self._lock:
+            if cache_key in self._history_cache:
+                return self._history_cache[cache_key]
         
         data = await self._coingecko_request(
             f"/coins/{coin_id}/market_chart",
@@ -155,13 +187,17 @@ class CryptoModule:
         
         prices = data.get("prices", [])
         
-        return [
+        result = [
             {
                 "timestamp": datetime.fromtimestamp(p[0] / 1000).isoformat(),
                 "price": p[1],
             }
             for p in prices
         ]
+        
+        with self._lock:
+            self._history_cache[cache_key] = result
+        return result
     
     async def estimate_price_probability(
         self,
@@ -256,12 +292,17 @@ class CryptoModule:
         )
     
     async def get_crypto_dashboard(self) -> dict:
-        """Get comprehensive crypto dashboard."""
+        """Get comprehensive crypto dashboard (cached 3 min)."""
+        cache_key = "dashboard"
+        with self._lock:
+            if cache_key in self._dashboard_cache:
+                return self._dashboard_cache[cache_key]
+        
         # Get top coins
         prices = await self.get_prices(["btc", "eth", "sol"])
         market = await self.get_market_overview()
         
-        return {
+        result = {
             "market_overview": {
                 "total_market_cap": f"${market['total_market_cap']/1e12:.2f}T" if market.get('total_market_cap') else None,
                 "btc_dominance": f"{market.get('btc_dominance', 0):.1f}%",
@@ -278,7 +319,12 @@ class CryptoModule:
                 for p in prices
             ],
             "available_coins": list(self.COINS.keys()),
+            "cached_at": datetime.now().isoformat(),
         }
+        
+        with self._lock:
+            self._dashboard_cache[cache_key] = result
+        return result
 
 
 # Singleton
