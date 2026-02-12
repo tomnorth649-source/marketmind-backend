@@ -5,12 +5,15 @@ from app.api.v1 import (
     auth, events, research, health, markets, polymarket, arb, 
     fed, inflation, weather, sports, crypto, politics,
     fedwatch, calibration, opportunities, query,
+    fed_enhanced, crypto_enhanced,
 )
 
 router = APIRouter()
 
 router.include_router(health.router, tags=["health"])
 router.include_router(query.router)  # Research Query Engine
+router.include_router(fed_enhanced.router)  # Enhanced Fed dashboard
+router.include_router(crypto_enhanced.router)  # Enhanced Crypto dashboard
 router.include_router(auth.router, prefix="/auth", tags=["auth"])
 router.include_router(events.router, prefix="/events", tags=["events"])
 router.include_router(research.router, prefix="/research", tags=["research"])
