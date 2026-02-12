@@ -374,19 +374,24 @@ async def get_hot_opportunities(limit: int = Query(default=10, ge=1, le=50)):
     
     # Filter to hot ones
     hot = [o for o in opportunities if o.is_hot]
+    hot_ids = {o.id for o in hot}
     
     # If not enough hot, include high volume ones
     if len(hot) < limit:
         by_volume = sorted(opportunities, key=lambda o: o.volume_24h, reverse=True)
         for opp in by_volume:
-            if opp not in hot:
+            if opp.id not in hot_ids:
                 hot.append(opp)
+                hot_ids.add(opp.id)
             if len(hot) >= limit:
                 break
     
+    # Convert to dicts for JSON serialization
+    hot_dicts = [o.model_dump() for o in hot[:limit]]
+    
     return {
-        "opportunities": hot[:limit],
-        "count": len(hot[:limit]),
+        "opportunities": hot_dicts,
+        "count": len(hot_dicts),
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -433,6 +438,6 @@ async def search_opportunities(
     
     return {
         "query": q,
-        "opportunities": opportunities,
+        "opportunities": [o.model_dump() for o in opportunities],
         "count": len(opportunities),
     }
