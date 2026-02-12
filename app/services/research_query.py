@@ -155,14 +155,28 @@ async def search_markets(query: str, limit: int = 10) -> list[dict]:
     kalshi_client = get_kalshi_client()
     
     results = []
-    query_words = query.lower().split()
+    # Extract meaningful keywords (including short important ones like "fed", "btc")
+    important_short_words = {"fed", "btc", "eth", "nba", "nfl", "mlb", "gop", "dem", "ai", "us", "uk"}
+    query_lower = query.lower()
+    query_words = [w for w in query_lower.split() if len(w) > 2 or w in important_short_words]
+    
+    # Add category-specific keywords
+    if "fed" in query_lower or "rate" in query_lower or "fomc" in query_lower:
+        query_words.extend(["fed", "rate", "fomc", "cut", "hike", "interest"])
+    if "bitcoin" in query_lower or "btc" in query_lower:
+        query_words.extend(["bitcoin", "btc", "crypto"])
+    if "trump" in query_lower or "biden" in query_lower or "election" in query_lower:
+        query_words.extend(["trump", "biden", "election", "president"])
+    
+    query_words = list(set(query_words))  # Dedupe
     
     try:
         # Fetch Polymarket
         poly_markets = await poly_client.get_markets(closed=False, limit=200)
         for m in poly_markets:
             title = (m.get("question") or m.get("title") or "").lower()
-            if any(word in title for word in query_words if len(word) > 3):
+            # Match if any query word appears in title
+            if any(word in title for word in query_words):
                 # Parse price
                 prices = m.get("outcomePrices", "[0.5, 0.5]")
                 try:
@@ -189,7 +203,8 @@ async def search_markets(query: str, limit: int = 10) -> list[dict]:
         kalshi_markets = kalshi_result.get("markets", [])
         for m in kalshi_markets:
             title = (m.get("title") or m.get("subtitle") or "").lower()
-            if any(word in title for word in query_words if len(word) > 3):
+            # Match if any query word appears in title
+            if any(word in title for word in query_words):
                 yes_price = float(m.get("yes_ask", 50)) / 100
                 results.append({
                     "platform": "kalshi",
