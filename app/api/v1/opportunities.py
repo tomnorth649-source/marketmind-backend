@@ -16,6 +16,20 @@ from app.integrations.polymarket import get_polymarket_client
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
 
+# Platform availability
+PLATFORMS = {
+    "polymarket": {"name": "Polymarket", "available": True},
+    "kalshi": {"name": "Kalshi", "available": False},  # Needs API creds
+}
+
+
+def filter_by_platform(opportunities: list, platform: str) -> list:
+    """Filter opportunities by platform."""
+    if platform == "all":
+        return opportunities
+    return [o for o in opportunities if o.platform == platform]
+
+
 class MarketOdds(BaseModel):
     """Human-readable market odds."""
     yes_pct: float  # e.g., 72.5
@@ -178,6 +192,7 @@ def parse_market_to_opportunity(market: dict, category: str = "other") -> Opport
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard(
     limit_per_category: int = Query(default=5, ge=1, le=20),
+    platform: str = Query(default="all", description="Filter by platform: kalshi, polymarket, or all"),
 ):
     """
     Get the main dashboard with top opportunities by category.
@@ -356,7 +371,10 @@ async def get_market_detail(market_id: str):
 
 
 @router.get("/hot")
-async def get_hot_opportunities(limit: int = Query(default=10, ge=1, le=50)):
+async def get_hot_opportunities(
+    limit: int = Query(default=10, ge=1, le=50),
+    platform: str = Query(default="all", description="Filter by platform: kalshi, polymarket, or all"),
+):
     """
     Get the hottest opportunities right now.
     
@@ -384,12 +402,17 @@ async def get_hot_opportunities(limit: int = Query(default=10, ge=1, le=50)):
                 if len(hot) >= limit:
                     break
         
+        # Apply platform filter
+        if platform != "all":
+            hot = [o for o in hot if o.platform == platform]
+        
         # Convert to dicts for JSON serialization
         hot_dicts = [o.model_dump() for o in hot[:limit]]
         
         return {
             "opportunities": hot_dicts,
             "count": len(hot_dicts),
+            "platform_filter": platform,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     except HTTPException:
@@ -442,4 +465,26 @@ async def search_opportunities(
         "query": q,
         "opportunities": [o.model_dump() for o in opportunities],
         "count": len(opportunities),
+    }
+
+
+@router.get("/platforms")
+async def get_platforms():
+    """
+    Get available prediction market platforms.
+    
+    Use this to populate the platform toggle in the UI.
+    """
+    return {
+        "platforms": [
+            {
+                "id": pid,
+                "name": pinfo["name"],
+                "available": pinfo["available"],
+                "status": "live" if pinfo["available"] else "coming_soon",
+            }
+            for pid, pinfo in PLATFORMS.items()
+        ],
+        "default": "all",
+        "options": ["all", "polymarket", "kalshi"],
     }
