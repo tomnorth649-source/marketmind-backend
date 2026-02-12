@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     polygon_api_key: str = Field(default="")
     openai_api_key: str = Field(default="")
     anthropic_api_key: str = Field(default="")
+    groq_api_key: str = Field(default="")
     
     @field_validator("debug", mode="before")
     @classmethod
