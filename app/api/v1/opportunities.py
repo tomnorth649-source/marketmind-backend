@@ -146,7 +146,7 @@ def parse_market_to_opportunity(market: dict, category: str = "other") -> Opport
     time_remaining = format_time_remaining(end_date)
     
     # Is it hot? High activity + soon to close
-    is_hot = vol_24h > 50_000 or (time_remaining and "h" in time_remaining and liquidity > 10_000)
+    is_hot = vol_24h > 50_000 or (time_remaining is not None and "h" in time_remaining and liquidity > 10_000)
     
     # Build URL
     slug = market.get("slug", market.get("id", ""))
