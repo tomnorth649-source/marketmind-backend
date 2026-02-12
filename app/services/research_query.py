@@ -224,13 +224,51 @@ async def search_markets(query: str, limit: int = 10) -> list[dict]:
 
 async def fetch_fedwatch_data() -> dict:
     """Fetch CME FedWatch probabilities."""
-    # This would call the actual FedWatch endpoint
-    # For now, use the backend's existing fedwatch service
     try:
         from app.services.research.fedwatch import FedWatchService
         service = FedWatchService()
-        data = await service.get_probabilities()
-        return data
+        timeline = await service.get_timeline()
+        
+        if not timeline or "meetings" not in timeline:
+            return {}
+        
+        meetings = timeline.get("meetings", [])
+        if not meetings:
+            return {}
+        
+        # Get next meeting
+        next_meeting = meetings[0]
+        current_low = next_meeting.get("current_target_low", 4.25)
+        current_high = next_meeting.get("current_target_high", 4.5)
+        current_range = f"{current_low}-{current_high}"
+        
+        # Calculate cut probability (sum of all ranges below current)
+        probs = next_meeting.get("probabilities", {})
+        cut_prob = 0.0
+        hold_prob = 0.0
+        hike_prob = 0.0
+        
+        for range_str, prob in probs.items():
+            try:
+                low = float(range_str.split("-")[0])
+                if low < current_low:
+                    cut_prob += prob
+                elif low == current_low:
+                    hold_prob += prob
+                else:
+                    hike_prob += prob
+            except:
+                continue
+        
+        return {
+            "next_meeting": next_meeting.get("meeting_date"),
+            "current_rate": f"{current_low}-{current_high}%",
+            "cut_prob": cut_prob,
+            "hold_prob": hold_prob,
+            "hike_prob": hike_prob,
+            "implied_rate": next_meeting.get("implied_rate"),
+            "probabilities": probs,
+        }
     except Exception as e:
         print(f"FedWatch error: {e}")
         return {}
@@ -255,50 +293,86 @@ async def research_fed(query: str, entities: dict) -> ResearchResult:
     """Research pipeline for Fed/rates questions."""
     sources = []
     probabilities = []
+    query_lower = query.lower()
     
-    # 1. Search markets
+    # Determine what the user is asking about
+    asking_about_cut = any(w in query_lower for w in ["cut", "lower", "reduce", "decrease"])
+    asking_about_hike = any(w in query_lower for w in ["hike", "raise", "increase"])
+    
+    # 1. FedWatch data (primary source for Fed questions)
+    fedwatch = await fetch_fedwatch_data()
+    if fedwatch and fedwatch.get("next_meeting"):
+        # Determine which probability to report based on query
+        if asking_about_cut:
+            prob = fedwatch.get("cut_prob", 0)
+            prob_type = "cut"
+        elif asking_about_hike:
+            prob = fedwatch.get("hike_prob", 0)
+            prob_type = "hike"
+        else:
+            # Default to most likely action
+            cut_prob = fedwatch.get("cut_prob", 0)
+            hold_prob = fedwatch.get("hold_prob", 0)
+            if cut_prob > hold_prob:
+                prob = cut_prob
+                prob_type = "cut"
+            else:
+                prob = hold_prob
+                prob_type = "hold"
+        
+        sources.append(Source(
+            type="fedwatch",
+            name=f"CME FedWatch - {fedwatch.get('next_meeting', 'Next Meeting')}",
+            probability=prob,
+            data={
+                "next_meeting": fedwatch.get("next_meeting"),
+                "current_rate": fedwatch.get("current_rate"),
+                "cut_prob": f"{fedwatch.get('cut_prob', 0)*100:.1f}%",
+                "hold_prob": f"{fedwatch.get('hold_prob', 0)*100:.1f}%",
+                "implied_rate": fedwatch.get("implied_rate"),
+            },
+            url="https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html",
+        ))
+        probabilities.append(prob)
+    
+    # 2. Search prediction markets for Fed-related markets
     markets = await search_markets(query)
     fed_markets = [m for m in markets if any(
-        kw in m["title"].lower() for kw in ["fed", "rate", "fomc", "cut", "hike"]
+        kw in m["title"].lower() for kw in ["fed", "rate", "fomc", "interest", "powell", "monetary"]
     )]
     
     for m in fed_markets[:3]:
         sources.append(Source(
             type="market",
-            name=f"{m['platform']}: {m['title'][:50]}",
+            name=f"{m['platform']}: {m['title'][:60]}",
             probability=m["probability"],
             data={"volume": m["volume"]},
             url=m["url"],
         ))
         probabilities.append(m["probability"])
     
-    # 2. FedWatch data
-    fedwatch = await fetch_fedwatch_data()
-    if fedwatch:
-        sources.append(Source(
-            type="fedwatch",
-            name="CME FedWatch Tool",
-            probability=fedwatch.get("cut_prob"),
-            data=fedwatch,
-        ))
-        if fedwatch.get("cut_prob"):
-            probabilities.append(fedwatch["cut_prob"])
-    
-    # Calculate weighted average
+    # Calculate probability (FedWatch weighted more heavily)
     if probabilities:
-        avg_prob = sum(probabilities) / len(probabilities)
-        confidence = Confidence.HIGH if len(probabilities) >= 3 else Confidence.MEDIUM
+        # FedWatch is first and gets 2x weight
+        if len(probabilities) > 1:
+            weighted = probabilities[0] * 2 + sum(probabilities[1:])
+            avg_prob = weighted / (len(probabilities) + 1)
+        else:
+            avg_prob = probabilities[0]
+        confidence = Confidence.HIGH if fedwatch else Confidence.MEDIUM
     else:
         avg_prob = None
         confidence = Confidence.LOW
     
-    # Generate reasoning
-    reasoning = f"Based on {len(sources)} sources: "
-    if fed_markets:
-        market_avg = sum(m["probability"] for m in fed_markets) / len(fed_markets)
-        reasoning += f"prediction markets average {market_avg*100:.0f}%. "
+    # Generate detailed reasoning
+    reasoning = ""
     if fedwatch:
-        reasoning += f"CME FedWatch shows {fedwatch.get('cut_prob', 0)*100:.0f}% cut probability. "
+        reasoning = f"CME FedWatch shows {fedwatch.get('cut_prob', 0)*100:.0f}% cut probability and {fedwatch.get('hold_prob', 0)*100:.0f}% hold probability for the {fedwatch.get('next_meeting', 'next')} meeting. "
+        reasoning += f"Current target rate is {fedwatch.get('current_rate', 'N/A')}, implied rate is {fedwatch.get('implied_rate', 'N/A')}%. "
+    if fed_markets:
+        reasoning += f"Found {len(fed_markets)} related prediction markets. "
+    if not reasoning:
+        reasoning = "Limited Fed-specific data available for this query."
     
     return ResearchResult(
         query=query,
