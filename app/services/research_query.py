@@ -229,21 +229,21 @@ async def fetch_fedwatch_data() -> dict:
         client = get_fedwatch_client()
         timeline = await client.get_timeline()
         
-        if not timeline or "meetings" not in timeline:
+        if not timeline or not timeline.meetings:
             return {}
         
-        meetings = timeline.get("meetings", [])
+        meetings = timeline.meetings
         if not meetings:
             return {}
         
-        # Get next meeting
+        # Get next meeting (it's a FedWatchProbs dataclass)
         next_meeting = meetings[0]
-        current_low = next_meeting.get("current_target_low", 4.25)
-        current_high = next_meeting.get("current_target_high", 4.5)
+        current_low = next_meeting.current_target_low
+        current_high = next_meeting.current_target_high
         current_range = f"{current_low}-{current_high}"
         
         # Calculate cut probability (sum of all ranges below current)
-        probs = next_meeting.get("probabilities", {})
+        probs = next_meeting.probabilities or {}
         cut_prob = 0.0
         hold_prob = 0.0
         hike_prob = 0.0
@@ -261,12 +261,12 @@ async def fetch_fedwatch_data() -> dict:
                 continue
         
         return {
-            "next_meeting": next_meeting.get("meeting_date"),
+            "next_meeting": next_meeting.meeting_date,
             "current_rate": f"{current_low}-{current_high}%",
             "cut_prob": cut_prob,
             "hold_prob": hold_prob,
             "hike_prob": hike_prob,
-            "implied_rate": next_meeting.get("implied_rate"),
+            "implied_rate": next_meeting.implied_rate,
             "probabilities": probs,
         }
     except Exception as e:
