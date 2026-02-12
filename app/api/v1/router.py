@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     auth, events, research, health, markets, polymarket, arb, 
     fed, inflation, weather, sports, crypto, politics,
-    fedwatch, calibration,
+    fedwatch, calibration, opportunities,
 )
 
 router = APIRouter()
@@ -16,6 +16,7 @@ router.include_router(research.router, prefix="/research", tags=["research"])
 router.include_router(markets.router, prefix="/markets", tags=["markets"])
 router.include_router(polymarket.router, tags=["polymarket"])
 router.include_router(arb.router, tags=["arbitrage"])
+router.include_router(opportunities.router, tags=["opportunities"])  # Main dashboard
 router.include_router(fed.router, tags=["fed-research"])
 router.include_router(fedwatch.router, tags=["fedwatch"])  # CME FedWatch integration
 router.include_router(calibration.router, tags=["calibration"])  # Prediction tracking
