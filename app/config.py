@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     # External APIs - Kalshi
     kalshi_api_key: str = Field(default="")
     kalshi_private_key_path: str = Field(default="./kalshi_private_key.pem")
+    kalshi_private_key_pem: str = Field(default="")  # PEM string for Railway
     fred_api_key: str = Field(default="")
     polygon_api_key: str = Field(default="")
     openai_api_key: str = Field(default="")

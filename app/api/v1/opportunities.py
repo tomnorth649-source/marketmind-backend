@@ -11,6 +11,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 
 from app.integrations.polymarket import get_polymarket_client
+from app.integrations.kalshi import get_kalshi_client
 
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 # Platform availability
 PLATFORMS = {
     "polymarket": {"name": "Polymarket", "available": True},
-    "kalshi": {"name": "Kalshi", "available": False},  # Needs API creds
+    "kalshi": {"name": "Kalshi", "available": True},  # API creds configured
 }
 
 
@@ -189,6 +190,77 @@ def parse_market_to_opportunity(market: dict, category: str = "other") -> Opport
     )
 
 
+def parse_kalshi_market_to_opportunity(market: dict, category: str = "other") -> Opportunity:
+    """Convert Kalshi market to Opportunity."""
+    # Parse prices (Kalshi uses cents 0-100)
+    yes_bid = float(market.get("yes_bid", 0) or 0)
+    yes_ask = float(market.get("yes_ask", 0) or 0)
+    no_bid = float(market.get("no_bid", 0) or 0)
+    
+    # Use mid price if available, else use ask
+    yes_price = (yes_bid + yes_ask) / 2 if yes_bid and yes_ask else yes_ask or 50
+    no_price = 100 - yes_price
+    
+    yes_pct = round(yes_price, 1)
+    no_pct = round(no_price, 1)
+    
+    # Get volumes (Kalshi returns volume in contracts)
+    vol_24h = float(market.get("volume_24h", 0) or market.get("volume", 0) or 0)
+    vol_total = float(market.get("volume", 0) or 0)
+    liquidity = float(market.get("liquidity", 0) or 0)
+    
+    # Time remaining
+    close_time = market.get("close_time") or market.get("expiration_time")
+    time_remaining = format_time_remaining(close_time) if close_time else None
+    
+    # Title parsing (Kalshi has ticker-based titles)
+    ticker = market.get("ticker", "")
+    title = market.get("title") or market.get("subtitle") or ticker
+    
+    # Event-level title if available
+    if market.get("event_title"):
+        title = market.get("event_title")
+    
+    # Is it hot?
+    is_hot = vol_24h > 1000 or (time_remaining is not None and "h" in time_remaining and liquidity > 100)
+    
+    # Build URL
+    url = f"https://kalshi.com/markets/{ticker}" if ticker else "https://kalshi.com"
+    
+    return Opportunity(
+        id=ticker or str(market.get("id", "")),
+        platform="kalshi",
+        title=title,
+        question=title,
+        category=category,
+        odds=MarketOdds(
+            yes_pct=yes_pct,
+            no_pct=no_pct,
+            yes_display=f"{yes_pct:.0f}% YES",
+            no_display=f"{no_pct:.0f}% NO",
+        ),
+        volume_24h=vol_24h,
+        volume_total=vol_total,
+        liquidity=liquidity,
+        liquidity_display=format_liquidity(liquidity * 100),  # Kalshi liquidity in dollars
+        closes_at=close_time,
+        time_remaining=time_remaining,
+        url=url,
+        is_hot=is_hot,
+    )
+
+
+async def fetch_kalshi_markets(limit: int = 100) -> list[dict]:
+    """Fetch markets from Kalshi API."""
+    try:
+        client = get_kalshi_client()
+        result = await client.get_markets(status="open", limit=limit)
+        return result.get("markets", [])
+    except Exception as e:
+        print(f"Kalshi fetch error: {e}")
+        return []
+
+
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard(
     limit_per_category: int = Query(default=5, ge=1, le=20),
@@ -200,13 +272,23 @@ async def get_dashboard(
     This is the primary endpoint for the MarketMind UI.
     Returns categorized opportunities with digestible odds.
     """
-    client = get_polymarket_client()
+    poly_markets = []
+    kalshi_markets = []
     
-    # Fetch markets from Polymarket (most liquid/active)
-    try:
-        markets = await client.get_markets(closed=False, limit=200)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Failed to fetch markets: {e}")
+    # Fetch from Polymarket if requested
+    if platform in ("all", "polymarket"):
+        try:
+            client = get_polymarket_client()
+            poly_markets = await client.get_markets(closed=False, limit=200)
+        except Exception as e:
+            print(f"Polymarket fetch error: {e}")
+    
+    # Fetch from Kalshi if requested
+    if platform in ("all", "kalshi"):
+        kalshi_markets = await fetch_kalshi_markets(limit=100)
+    
+    # Use polymarket markets for categorization (they have better metadata)
+    markets = poly_markets
     
     # Sort by volume for featured
     sorted_by_volume = sorted(
@@ -262,16 +344,33 @@ async def get_dashboard(
             top_opportunities=opportunities,
         ))
     
-    # Featured: Top 10 by volume overall
-    featured = [
-        parse_market_to_opportunity(m, "featured")
-        for m in sorted_by_volume[:10]
-    ]
+    # Featured: Top opportunities from both platforms
+    featured_opps = []
+    
+    # Add top Polymarket markets
+    if platform in ("all", "polymarket") and poly_markets:
+        for m in sorted_by_volume[:7]:
+            featured_opps.append(parse_market_to_opportunity(m, "featured"))
+    
+    # Add top Kalshi markets
+    if platform in ("all", "kalshi") and kalshi_markets:
+        kalshi_sorted = sorted(
+            kalshi_markets,
+            key=lambda m: float(m.get("volume", 0) or 0),
+            reverse=True
+        )[:5]
+        for m in kalshi_sorted:
+            featured_opps.append(parse_kalshi_market_to_opportunity(m, "featured"))
+    
+    # Re-sort combined featured by a score (volume matters more on Poly, liquidity on Kalshi)
+    featured_opps = sorted(featured_opps, key=lambda o: o.volume_total, reverse=True)[:10]
+    
+    total_count = len(poly_markets) + len(kalshi_markets)
     
     return DashboardResponse(
         categories=categories,
-        featured=featured,
-        total_markets=len(markets),
+        featured=featured_opps,
+        total_markets=total_count,
         updated_at=datetime.utcnow().isoformat() + "Z",
     )
 
@@ -380,13 +479,19 @@ async def get_hot_opportunities(
     
     Hot = High 24h volume + closing soon + good liquidity.
     """
-    client = get_polymarket_client()
+    opportunities = []
     
     try:
-        markets = await client.get_markets(closed=False, limit=200)
+        # Fetch from Polymarket
+        if platform in ("all", "polymarket"):
+            client = get_polymarket_client()
+            poly_markets = await client.get_markets(closed=False, limit=200)
+            opportunities.extend([parse_market_to_opportunity(m) for m in poly_markets])
         
-        # Convert to opportunities
-        opportunities = [parse_market_to_opportunity(m) for m in markets]
+        # Fetch from Kalshi
+        if platform in ("all", "kalshi"):
+            kalshi_markets = await fetch_kalshi_markets(limit=100)
+            opportunities.extend([parse_kalshi_market_to_opportunity(m) for m in kalshi_markets])
         
         # Filter to hot ones
         hot = [o for o in opportunities if o.is_hot]

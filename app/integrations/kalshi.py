@@ -42,10 +42,33 @@ class KalshiClient:
         self.api_key = settings.kalshi_api_key
         self._private_key = None
         self._private_key_path = getattr(settings, 'kalshi_private_key_path', None)
+        self._private_key_pem = getattr(settings, 'kalshi_private_key_pem', None)
         
     def _load_private_key(self):
-        """Load RSA private key for signing requests."""
-        if self._private_key is None and self._private_key_path:
+        """Load RSA private key for signing requests.
+        
+        Supports loading from:
+        1. KALSHI_PRIVATE_KEY_PEM env var (PEM string, for Railway)
+        2. KALSHI_PRIVATE_KEY_PATH file path (for local dev)
+        """
+        if self._private_key is not None:
+            return self._private_key
+        
+        # Try loading from PEM string (Railway deployment)
+        if self._private_key_pem:
+            try:
+                # Handle escaped newlines from env var
+                pem_content = self._private_key_pem.replace('\\n', '\n')
+                self._private_key = serialization.load_pem_private_key(
+                    pem_content.encode(),
+                    password=None,
+                )
+                return self._private_key
+            except Exception as e:
+                print(f"Failed to load key from PEM string: {e}")
+        
+        # Fall back to file path (local dev)
+        if self._private_key_path:
             key_path = Path(self._private_key_path)
             if key_path.exists():
                 with open(key_path, "rb") as f:
