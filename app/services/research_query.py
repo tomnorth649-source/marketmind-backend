@@ -225,9 +225,9 @@ async def search_markets(query: str, limit: int = 10) -> list[dict]:
 async def fetch_fedwatch_data() -> dict:
     """Fetch CME FedWatch probabilities."""
     try:
-        from app.services.research.fedwatch import FedWatchService
-        service = FedWatchService()
-        timeline = await service.get_timeline()
+        from app.services.research.fedwatch import get_fedwatch_client
+        client = get_fedwatch_client()
+        timeline = await client.get_timeline()
         
         if not timeline or "meetings" not in timeline:
             return {}
