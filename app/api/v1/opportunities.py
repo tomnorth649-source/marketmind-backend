@@ -366,34 +366,36 @@ async def get_hot_opportunities(limit: int = Query(default=10, ge=1, le=50)):
     
     try:
         markets = await client.get_markets(closed=False, limit=200)
+        
+        # Convert to opportunities
+        opportunities = [parse_market_to_opportunity(m) for m in markets]
+        
+        # Filter to hot ones
+        hot = [o for o in opportunities if o.is_hot]
+        hot_ids = {o.id for o in hot}
+        
+        # If not enough hot, include high volume ones
+        if len(hot) < limit:
+            by_volume = sorted(opportunities, key=lambda o: o.volume_24h, reverse=True)
+            for opp in by_volume:
+                if opp.id not in hot_ids:
+                    hot.append(opp)
+                    hot_ids.add(opp.id)
+                if len(hot) >= limit:
+                    break
+        
+        # Convert to dicts for JSON serialization
+        hot_dicts = [o.model_dump() for o in hot[:limit]]
+        
+        return {
+            "opportunities": hot_dicts,
+            "count": len(hot_dicts),
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Failed to fetch markets: {e}")
-    
-    # Convert to opportunities
-    opportunities = [parse_market_to_opportunity(m) for m in markets]
-    
-    # Filter to hot ones
-    hot = [o for o in opportunities if o.is_hot]
-    hot_ids = {o.id for o in hot}
-    
-    # If not enough hot, include high volume ones
-    if len(hot) < limit:
-        by_volume = sorted(opportunities, key=lambda o: o.volume_24h, reverse=True)
-        for opp in by_volume:
-            if opp.id not in hot_ids:
-                hot.append(opp)
-                hot_ids.add(opp.id)
-            if len(hot) >= limit:
-                break
-    
-    # Convert to dicts for JSON serialization
-    hot_dicts = [o.model_dump() for o in hot[:limit]]
-    
-    return {
-        "opportunities": hot_dicts,
-        "count": len(hot_dicts),
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-    }
+        raise HTTPException(status_code=500, detail=f"Error in hot opportunities: {str(e)}")
 
 
 @router.get("/search")
