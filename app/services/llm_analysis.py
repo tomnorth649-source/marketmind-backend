@@ -208,43 +208,38 @@ Output ONLY valid JSON, no markdown formatting."""
 
 def _parse_analysis_response(text: str, event: Dict[str, Any], provider: str) -> Dict[str, Any]:
     """Parse LLM response into structured analysis."""
+    import re
+    
     # Try to extract JSON from response
     try:
-        # Handle markdown code blocks
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
+        original_text = text
         
-        # Clean up common JSON issues from LLMs
+        # Handle markdown code blocks - be thorough
+        if "```json" in text:
+            # Extract content between ```json and ```
+            match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+            if match:
+                text = match.group(1)
+        elif "```" in text:
+            match = re.search(r'```\s*([\s\S]*?)\s*```', text)
+            if match:
+                text = match.group(1)
+        
         text = text.strip()
         
-        # Try direct parse first
+        # If text doesn't start with {, try to find JSON object
+        if not text.startswith("{"):
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                text = json_match.group(0)
+        
+        # Try parsing
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # Try fixing common issues
-            import re
-            
-            # Find JSON object boundaries
-            if "{" in text:
-                start_idx = text.find("{")
-                brace_count = 0
-                end_idx = start_idx
-                for i, c in enumerate(text[start_idx:], start_idx):
-                    if c == "{":
-                        brace_count += 1
-                    elif c == "}":
-                        brace_count -= 1
-                        if brace_count == 0:
-                            end_idx = i + 1
-                            break
-                if end_idx > start_idx:
-                    text = text[start_idx:end_idx]
-            
-            # Replace newlines inside the JSON (but keep structure)
-            text = re.sub(r'\n\s*', ' ', text)
-            data = json.loads(text)
+            # Collapse newlines and try again
+            text_collapsed = re.sub(r'\n\s*', ' ', text)
+            data = json.loads(text_collapsed)
         
         # Calculate edge
         market_prob = event.get("probability", 0.5)
