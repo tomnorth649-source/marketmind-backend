@@ -148,7 +148,7 @@ async def analyze_with_claude(event: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "content-type": "application/json"
                 },
                 json={
-                    "model": "claude-3-5-sonnet-latest",
+                    "model": "claude-3-sonnet-20240229",
                     "max_tokens": 1024,
                     "messages": [
                         {"role": "user", "content": prompt}
