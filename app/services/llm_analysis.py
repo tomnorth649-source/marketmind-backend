@@ -216,7 +216,35 @@ def _parse_analysis_response(text: str, event: Dict[str, Any], provider: str) ->
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
         
-        data = json.loads(text.strip())
+        # Clean up common JSON issues from LLMs
+        text = text.strip()
+        
+        # Try direct parse first
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            # Try fixing common issues
+            import re
+            
+            # Find JSON object boundaries
+            if "{" in text:
+                start_idx = text.find("{")
+                brace_count = 0
+                end_idx = start_idx
+                for i, c in enumerate(text[start_idx:], start_idx):
+                    if c == "{":
+                        brace_count += 1
+                    elif c == "}":
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end_idx = i + 1
+                            break
+                if end_idx > start_idx:
+                    text = text[start_idx:end_idx]
+            
+            # Replace newlines inside the JSON (but keep structure)
+            text = re.sub(r'\n\s*', ' ', text)
+            data = json.loads(text)
         
         # Calculate edge
         market_prob = event.get("probability", 0.5)
