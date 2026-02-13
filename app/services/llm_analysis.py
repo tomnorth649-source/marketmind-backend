@@ -65,6 +65,7 @@ async def analyze_with_gemini(event: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "generationConfig": {
                         "temperature": 0.7,
                         "maxOutputTokens": 1024,
+                        "responseMimeType": "application/json",
                     }
                 }
             )
