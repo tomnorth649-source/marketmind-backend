@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     kalshi_private_key_pem: str = Field(default="")  # PEM string for Railway
     fred_api_key: str = Field(default="")
     polygon_api_key: str = Field(default="")
+    
+    # LLM APIs (Tiered: Gemini free → OpenAI → Anthropic)
+    gemini_api_key: str = Field(default="")
     openai_api_key: str = Field(default="")
     anthropic_api_key: str = Field(default="")
     groq_api_key: str = Field(default="")
