@@ -4,7 +4,7 @@ Surfaces top actionable prediction market opportunities across all categories
 in a digestible, interactive format.
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
@@ -15,6 +15,45 @@ from app.integrations.kalshi import get_kalshi_client
 
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
+
+
+# ─── In-memory cache for market data ───────────────────────────────────────
+class MarketCache:
+    """Simple in-memory cache with TTL."""
+    def __init__(self, ttl_seconds: int = 300):  # 5 min default
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self._poly_data: list = []
+        self._kalshi_data: list = []
+        self._poly_updated: Optional[datetime] = None
+        self._kalshi_updated: Optional[datetime] = None
+    
+    def is_poly_stale(self) -> bool:
+        if self._poly_updated is None:
+            return True
+        return datetime.utcnow() - self._poly_updated > self.ttl
+    
+    def is_kalshi_stale(self) -> bool:
+        if self._kalshi_updated is None:
+            return True
+        return datetime.utcnow() - self._kalshi_updated > self.ttl
+    
+    def set_poly(self, data: list):
+        self._poly_data = data
+        self._poly_updated = datetime.utcnow()
+    
+    def set_kalshi(self, data: list):
+        self._kalshi_data = data
+        self._kalshi_updated = datetime.utcnow()
+    
+    def get_poly(self) -> list:
+        return self._poly_data
+    
+    def get_kalshi(self) -> list:
+        return self._kalshi_data
+
+
+# Global cache instance (5 min TTL)
+_cache = MarketCache(ttl_seconds=300)
 
 
 # Platform availability
@@ -271,21 +310,31 @@ async def get_dashboard(
     
     This is the primary endpoint for the MarketMind UI.
     Returns categorized opportunities with digestible odds.
+    Uses in-memory cache (5 min TTL) for faster responses.
     """
     poly_markets = []
     kalshi_markets = []
     
-    # Fetch from Polymarket if requested
+    # Fetch from Polymarket if requested (with caching)
     if platform in ("all", "polymarket"):
-        try:
-            client = get_polymarket_client()
-            poly_markets = await client.get_markets(closed=False, limit=200)
-        except Exception as e:
-            print(f"Polymarket fetch error: {e}")
+        if _cache.is_poly_stale():
+            try:
+                client = get_polymarket_client()
+                poly_markets = await client.get_markets(closed=False, limit=200)
+                _cache.set_poly(poly_markets)
+            except Exception as e:
+                print(f"Polymarket fetch error: {e}")
+                poly_markets = _cache.get_poly()  # Use stale data on error
+        else:
+            poly_markets = _cache.get_poly()
     
-    # Fetch from Kalshi if requested
+    # Fetch from Kalshi if requested (with caching)
     if platform in ("all", "kalshi"):
-        kalshi_markets = await fetch_kalshi_markets(limit=100)
+        if _cache.is_kalshi_stale():
+            kalshi_markets = await fetch_kalshi_markets(limit=100)
+            _cache.set_kalshi(kalshi_markets)
+        else:
+            kalshi_markets = _cache.get_kalshi()
     
     # Use polymarket markets for categorization (they have better metadata)
     markets = poly_markets
@@ -478,19 +527,28 @@ async def get_hot_opportunities(
     Get the hottest opportunities right now.
     
     Hot = High 24h volume + closing soon + good liquidity.
+    Uses in-memory cache (5 min TTL) for faster responses.
     """
     opportunities = []
     
     try:
-        # Fetch from Polymarket
+        # Fetch from Polymarket (with caching)
         if platform in ("all", "polymarket"):
-            client = get_polymarket_client()
-            poly_markets = await client.get_markets(closed=False, limit=200)
+            if _cache.is_poly_stale():
+                client = get_polymarket_client()
+                poly_markets = await client.get_markets(closed=False, limit=200)
+                _cache.set_poly(poly_markets)
+            else:
+                poly_markets = _cache.get_poly()
             opportunities.extend([parse_market_to_opportunity(m) for m in poly_markets])
         
-        # Fetch from Kalshi
+        # Fetch from Kalshi (with caching)
         if platform in ("all", "kalshi"):
-            kalshi_markets = await fetch_kalshi_markets(limit=100)
+            if _cache.is_kalshi_stale():
+                kalshi_markets = await fetch_kalshi_markets(limit=100)
+                _cache.set_kalshi(kalshi_markets)
+            else:
+                kalshi_markets = _cache.get_kalshi()
             opportunities.extend([parse_kalshi_market_to_opportunity(m) for m in kalshi_markets])
         
         # Filter to hot ones
